@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 
+	"encoding/json"
+
 	"github.com/hashicorp/go-multierror"
 	"github.com/urfave/cli/v2"
 
@@ -665,7 +667,7 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 	}
 
 	writer := newCountingReaderWriter(file, c.progressbar)
-	size, err := srcClient.Get(ctx, srcurl, writer, c.concurrency, c.partSize)
+	size, meta, err := srcClient.Get(ctx, srcurl, writer, c.concurrency, c.partSize)
 	file.Close()
 
 	if err != nil {
@@ -674,6 +676,22 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 			printDebug(c.op, dErr, srcurl, dsturl)
 		}
 		return err
+	}
+
+	// Write metadata sidecar file
+	if meta != nil {
+		metadataPath := dsturl.Absolute() + ".metadata.json"
+		metadataFile, err := os.Create(metadataPath)
+		if err != nil {
+			printDebug(c.op, fmt.Errorf("failed to create metadata sidecar: %w", err), srcurl, dsturl)
+		} else {
+			enc := json.NewEncoder(metadataFile)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(meta); err != nil {
+				printDebug(c.op, fmt.Errorf("failed to write metadata sidecar: %w", err), srcurl, dsturl)
+			}
+			metadataFile.Close()
+		}
 	}
 
 	if c.deleteSource {

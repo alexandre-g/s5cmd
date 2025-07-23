@@ -70,6 +70,12 @@ type Downloader struct {
 	// and will use the returned WriterReadFrom from the provider as the
 	// destination writer when copying from http response body.
 	BufferProvider WriterReadFromProvider
+
+	// ResponseHandler, if not nil, is called with the *s3.GetObjectOutput
+	// returned by every internal GetObject request.  The first invocation
+	// already contains the full object-level headers (Content-Type, user
+	// metadata, …).  DO NOT touch resp.Body here.
+	ResponseHandler func(*s3.GetObjectOutput)
 }
 
 // WithDownloaderRequestOptions appends to the Downloader's API request options.
@@ -282,6 +288,11 @@ func (d Downloader) DownloadWithIterator(ctx aws.Context, iter BatchDownloadIter
 	return nil
 }
 
+// WithResponseHandler sets Downloader.ResponseHandler.
+func WithResponseHandler(fn func(*s3.GetObjectOutput)) func(*Downloader) {
+	return func(d *Downloader) { d.ResponseHandler = fn }
+}
+
 // downloader is the implementation structure used internally by Downloader.
 type downloader struct {
 	ctx aws.Context
@@ -465,6 +476,12 @@ func (d *downloader) tryDownloadChunk(in *s3.GetObjectInput, w io.Writer) (int64
 	if err != nil {
 		return 0, err
 	}
+
+	// ⇢ hand off the headers
+	if d.cfg.ResponseHandler != nil {
+		d.cfg.ResponseHandler(resp)
+	}
+
 	d.setTotalBytes(resp) // Set total if not yet set.
 
 	var src io.Reader = resp.Body

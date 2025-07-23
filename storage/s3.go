@@ -599,7 +599,7 @@ func (s *S3) Presign(ctx context.Context, from *url.URL, expire time.Duration) (
 }
 
 // Get is a multipart download operation which downloads S3 objects into any
-// destination that implements io.WriterAt interface.
+// destination that implements io.WriterAt interface. Also gets metadata.
 // Makes a single 'GetObject' call if 'concurrency' is 1 and ignores 'partSize'.
 func (s *S3) Get(
 	ctx context.Context,
@@ -607,9 +607,10 @@ func (s *S3) Get(
 	to io.WriterAt,
 	concurrency int,
 	partSize int64,
-) (int64, error) {
+) (n int64, meta *Metadata, err error) {
+
 	if s.dryRun {
-		return 0, nil
+		return 0, &Metadata{}, nil
 	}
 
 	input := &s3.GetObjectInput{
@@ -621,10 +622,36 @@ func (s *S3) Get(
 		input.VersionId = aws.String(from.VersionID)
 	}
 
-	return s.downloader.DownloadWithContext(ctx, to, input, func(u *s3manager.Downloader) {
-		u.PartSize = partSize
-		u.Concurrency = concurrency
-	})
+	// place to store headers coming from first part
+	var once sync.Once
+	var hdr *s3.GetObjectOutput
+
+	n, err = s.downloader.DownloadWithContext(ctx, to, input,
+		func(u *s3manager.Downloader) {
+			u.PartSize = partSize
+			u.Concurrency = concurrency
+		},
+		s3manager.WithResponseHandler(func(o *s3.GetObjectOutput) {
+			// record the very first response we see
+			once.Do(func() { hdr = o })
+		}),
+	)
+
+	if err != nil {
+		return n, nil, err
+	}
+	if hdr == nil { // should never happen
+		return n, nil, fmt.Errorf("no response headers captured")
+	}
+
+	meta = &Metadata{
+		ContentType:        aws.StringValue(hdr.ContentType),
+		ContentEncoding:    aws.StringValue(hdr.ContentEncoding),
+		ContentDisposition: aws.StringValue(hdr.ContentDisposition),
+		EncryptionMethod:   aws.StringValue(hdr.ServerSideEncryption),
+		UserDefined:        aws.StringValueMap(hdr.Metadata),
+	}
+	return n, meta, nil
 }
 
 type SelectQuery struct {
